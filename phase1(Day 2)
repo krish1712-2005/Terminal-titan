@@ -1,0 +1,5 @@
+let marks=[76,86,44,67,54,99,76,];
+let highest=Math.max(...marks);
+console.log("highest marks;",highest);
+
+//output 99
