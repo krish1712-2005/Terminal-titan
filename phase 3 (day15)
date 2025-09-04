@@ -1,0 +1,476 @@
+# Full-Stack App with Authentication
+
+**Tech stack**
+
+* Backend: Node.js (Express), MongoDB (mongoose), JWT, bcrypt
+* Frontend: React (Create React App), React Router
+* Dev tools: nodemon (backend), concurrently (optional)
+
+---
+
+## What you get
+
+A complete example full-stack application with:
+
+* User registration (email + password)
+* Login (JWT issued)
+* Protected API route (requires `Authorization: Bearer <token>`)
+* React frontend with Register, Login, Dashboard (protected) pages
+* Clear folder structure and run instructions
+
+---
+
+## Folder structure
+
+```
+fullstack-auth/
+├─ backend/
+│  ├─ package.json
+│  ├─ server.js
+│  ├─ config/
+│  │  └─ db.js
+│  ├─ models/
+│  │  └─ User.js
+│  ├─ routes/
+│  │  ├─ auth.js
+│  │  └─ protected.js
+│  └─ .env
+└─ frontend/
+   ├─ package.json
+   ├─ public/
+   └─ src/
+      ├─ index.js
+      ├─ App.js
+      ├─ services/api.js
+      ├─ pages/
+      │  ├─ Register.js
+      │  ├─ Login.js
+      │  └─ Dashboard.js
+      └─ components/
+         └─ PrivateRoute.js
+```
+
+---
+
+## Backend code
+
+### `backend/package.json`
+
+```json
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.0",
+    "mongoose": "^7.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
+```
+
+### `backend/.env` (example)
+
+```
+PORT=5000
+MONGO_URI=mongodb://localhost:27017/fullstack_auth
+JWT_SECRET=replace_with_a_strong_secret
+JWT_EXPIRES_IN=7d
+```
+
+> Important: use a strong secret for `JWT_SECRET` in production and never commit `.env`.
+
+### `backend/config/db.js`
+
+```js
+const mongoose = require('mongoose');
+const connectDB = async (mongoURI) => {
+  await mongoose.connect(mongoURI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  });
+  console.log('MongoDB connected');
+};
+module.exports = connectDB;
+```
+
+### `backend/models/User.js`
+
+```js
+const mongoose = require('mongoose');
+const UserSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true, lowercase: true },
+  password: { type: String, required: true },
+}, { timestamps: true });
+module.exports = mongoose.model('User', UserSchema);
+```
+
+### `backend/routes/auth.js`
+
+```js
+const express = require('express');
+const router = express.Router();
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+
+// Register
+router.post('/register', async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ message: 'Missing fields' });
+    const existing = await User.findOne({ email });
+    if (existing) return res.status(400).json({ message: 'Email already registered' });
+    const hashed = await bcrypt.hash(password, 10);
+    const user = await User.create({ name, email, password: hashed });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN });
+    res.json({ token, user: { id: user._id, name: user.name, email: user.email } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Login
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ message: 'Missing fields' });
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: 'Invalid credentials' });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(400).json({ message: 'Invalid credentials' });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN });
+    res.json({ token, user: { id: user._id, name: user.name, email: user.email } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+module.exports = router;
+```
+
+### `backend/routes/protected.js`
+
+```js
+const express = require('express');
+const router = express.Router();
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+
+// middleware
+const auth = (req, res, next) => {
+  const header = req.headers['authorization'];
+  if (!header) return res.status(401).json({ message: 'No token' });
+  const parts = header.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ message: 'Invalid token format' });
+  const token = parts[1];
+  try {
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    req.userId = payload.id;
+    next();
+  } catch (err) {
+    return res.status(401).json({ message: 'Invalid token' });
+  }
+};
+
+router.get('/profile', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select('-password');
+    res.json({ user });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+module.exports = router;
+```
+
+### `backend/server.js`
+
+```js
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const connectDB = require('./config/db');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const PORT = process.env.PORT || 5000;
+
+connectDB(process.env.MONGO_URI).catch(err => {
+  console.error('Mongo connection error', err);
+  process.exit(1);
+});
+
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api', require('./routes/protected'));
+
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+```
+
+---
+
+## Frontend code (React)
+
+### `frontend/package.json`
+
+```json
+{
+  "name": "frontend",
+  "private": true,
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.14.1",
+    "react-scripts": "5.0.1"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build"
+  }
+}
+```
+
+### `frontend/src/services/api.js`
+
+```js
+const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:5000/api';
+
+export async function register(user) {
+  const res = await fetch(`${API_BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(user),
+  });
+  return res.json();
+}
+
+export async function login(credentials) {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(credentials),
+  });
+  return res.json();
+}
+
+export async function getProfile(token) {
+  const res = await fetch(`${API_BASE}/profile`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return res.json();
+}
+```
+
+### `frontend/src/index.js`
+
+```js
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+
+createRoot(document.getElementById('root')).render(<App />);
+```
+
+### `frontend/src/App.js`
+
+```js
+import React from 'react';
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import Register from './pages/Register';
+import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
+import PrivateRoute from './components/PrivateRoute';
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <nav style={{ padding: 10 }}>
+        <Link to="/register">Register</Link> | <Link to="/login">Login</Link> | <Link to="/dashboard">Dashboard</Link>
+      </nav>
+      <Routes>
+        <Route path="/register" element={<Register />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+        <Route path="/" element={<div style={{padding:20}}>Welcome — use the nav</div>} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+```
+
+### `frontend/src/components/PrivateRoute.js`
+
+```js
+import React from 'react';
+import { Navigate } from 'react-router-dom';
+
+export default function PrivateRoute({ children }) {
+  const token = localStorage.getItem('token');
+  if (!token) return <Navigate to="/login" replace />;
+  return children;
+}
+```
+
+### `frontend/src/pages/Register.js`
+
+```js
+import React, { useState } from 'react';
+import { register } from '../services/api';
+
+export default function Register() {
+  const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [message, setMessage] = useState('');
+  const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+  const submit = async (e) => {
+    e.preventDefault();
+    const data = await register(form);
+    if (data.token) {
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
+      setMessage('Registered successfully');
+      window.location.href = '/dashboard';
+    } else setMessage(data.message || 'Registration failed');
+  };
+  return (
+    <div style={{ padding: 20 }}>
+      <h2>Register</h2>
+      <form onSubmit={submit}>
+        <div><input name="name" placeholder="Name" value={form.name} onChange={handleChange} /></div>
+        <div><input name="email" placeholder="Email" value={form.email} onChange={handleChange} /></div>
+        <div><input name="password" type="password" placeholder="Password" value={form.password} onChange={handleChange} /></div>
+        <button type="submit">Register</button>
+      </form>
+      <div>{message}</div>
+    </div>
+  );
+}
+```
+
+### `frontend/src/pages/Login.js`
+
+```js
+import React, { useState } from 'react';
+import { login } from '../services/api';
+
+export default function Login() {
+  const [form, setForm] = useState({ email: '', password: '' });
+  const [message, setMessage] = useState('');
+  const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+  const submit = async (e) => {
+    e.preventDefault();
+    const data = await login(form);
+    if (data.token) {
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
+      window.location.href = '/dashboard';
+    } else setMessage(data.message || 'Login failed');
+  };
+  return (
+    <div style={{ padding: 20 }}>
+      <h2>Login</h2>
+      <form onSubmit={submit}>
+        <div><input name="email" placeholder="Email" value={form.email} onChange={handleChange} /></div>
+        <div><input name="password" type="password" placeholder="Password" value={form.password} onChange={handleChange} /></div>
+        <button type="submit">Login</button>
+      </form>
+      <div>{message}</div>
+    </div>
+  );
+}
+```
+
+### `frontend/src/pages/Dashboard.js`
+
+```js
+import React, { useEffect, useState } from 'react';
+import { getProfile } from '../services/api';
+
+export default function Dashboard() {
+  const [user, setUser] = useState(null);
+  const [message, setMessage] = useState('');
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    getProfile(token).then(res => {
+      if (res.user) setUser(res.user);
+      else setMessage(res.message || 'Failed to fetch profile');
+    });
+  }, []);
+
+  const logout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.href = '/login';
+  };
+
+  return (
+    <div style={{ padding: 20 }}>
+      <h2>Dashboard</h2>
+      {user ? (
+        <div>
+          <p>Welcome, {user.name}</p>
+          <p>Email: {user.email}</p>
+          <button onClick={logout}>Logout</button>
+        </div>
+      ) : (
+        <div>{message || 'Loading...'}</div>
+      )}
+    </div>
+  );
+}
+```
+
+---
+
+## Running locally (quick steps)
+
+1. Install MongoDB and ensure it's running (or use MongoDB Atlas and set `MONGO_URI` accordingly).
+2. Start backend:
+
+   * `cd backend`
+   * `npm install`
+   * create `.env` (see example above)
+   * `npm run dev` (requires nodemon) or `npm start`
+3. Start frontend:
+
+   * `cd frontend`
+   * `npm install`
+   * create `.env` with `REACT_APP_API_BASE=http://localhost:5000/api` if needed
+   * `npm start`
+4. Visit `http://localhost:3000` to use the app.
+
+---
+
+## Notes & next steps (ideas to improve)
+
+* Use refresh tokens for better security.
+* Store tokens in http-only secure cookies instead of localStorage to mitigate XSS.
+* Add email verification and password reset flows.
+* Rate-limiting and brute force protection on auth endpoints.
+* Use TLS (https) in production and strong CORS rules.
+
+---
+
+If you'd like, I can:
+
+* Convert this to a GitHub-ready repository with separate `README.md` and full files.
+* Replace React CRA with Vite + Tailwind for a nicer frontend.
+* Add role-based auth, social login, or OTP login.
+
+Tell me which option and I will update the project in this canvas.
