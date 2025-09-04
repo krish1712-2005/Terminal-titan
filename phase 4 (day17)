@@ -1,0 +1,248 @@
+# Real-Time Chat Application — Full Stack Blueprint
+
+This document contains a complete blueprint and starter code snippets to build a real-time chat application with user authentication, one-to-one and group chats, presence (online/offline), typing indicators, and message persistence.
+
+---
+
+## Recommended tech stack
+
+* **Backend:** Node.js, Express
+* **Real-time:** Socket.IO (WebSocket fallback)
+* **Database:** MongoDB (Mongoose) for users/messages
+* **Auth:** JWT + bcrypt; optionally httpOnly cookies
+* **Frontend:** React (Vite) or Next.js, Socket.IO client
+* **Optional extras:** Redis adapter for Socket.IO scaling, WebRTC for voice/video, S3/Cloudinary for file uploads
+
+---
+
+## Key features
+
+* User register/login
+* Real-time one-to-one chat
+* Real-time group chat / rooms
+* Online presence and last-seen
+* Typing indicators
+* Message persistence and read receipts
+* Message delivery acknowledgements
+* File/image attachments
+* Search message history
+* Admin moderation tools
+
+---
+
+## Folder structure
+
+```
+chat-app/
+├─ backend/
+│  ├─ package.json
+│  ├─ server.js
+│  ├─ config/db.js
+│  ├─ models/
+│  │  ├─ User.js
+│  │  └─ Message.js
+│  ├─ routes/
+│  │  └─ auth.js
+│  └─ sockets/
+│     └─ index.js
+└─ frontend/
+   ├─ package.json
+   └─ src/
+      ├─ main.jsx
+      ├─ App.jsx
+      ├─ pages/
+      │  ├─ Login.jsx
+      │  ├─ Register.jsx
+      │  └─ Chat.jsx
+      ├─ components/
+      │  ├─ MessageList.jsx
+      │  ├─ MessageInput.jsx
+      │  └─ UserList.jsx
+      └─ services/api.js
+```
+
+---
+
+## Database models (Mongoose)
+
+### `User`
+
+```js
+const UserSchema = new mongoose.Schema({
+  name: String,
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  avatar: String,
+  lastSeen: Date,
+}, { timestamps: true });
+```
+
+### `Message`
+
+```js
+const MessageSchema = new mongoose.Schema({
+  from: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  to: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // null for room messages
+  room: { type: String, default: null },
+  content: String,
+  attachments: [String],
+  delivered: { type: Boolean, default: false },
+  read: { type: Boolean, default: false },
+}, { timestamps: true });
+```
+
+---
+
+## Backend — high-level flow
+
+1. Express handles REST endpoints for auth and message history.
+2. Socket.IO handles real-time events: `connect`, `join`, `message`, `typing`, `presence`, `read-receipt`.
+3. On socket connection, validate the JWT token (send token when connecting) and map socket ID to user ID.
+4. When a message is sent: save to DB, emit to recipient(s), and return an ack to sender. Update delivery status on ack.
+5. Optionally use Redis adapter for Socket.IO when running multiple server instances.
+
+---
+
+## Example backend code snippets
+
+### `backend/server.js` (core)
+
+```js
+require('dotenv').config();
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const connectDB = require('./config/db');
+const authRoutes = require('./routes/auth');
+const sockets = require('./sockets');
+
+const app = express();
+app.use(express.json());
+app.use('/api/auth', authRoutes);
+
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
+
+sockets(io); // mount socket handlers
+
+connectDB(process.env.MONGO_URI);
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => console.log('Server listening', PORT));
+```
+
+### `backend/sockets/index.js`
+
+```js
+const jwt = require('jsonwebtoken');
+const Message = require('../models/Message');
+
+module.exports = (io) => {
+  const onlineUsers = new Map(); // userId => socketId
+
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('Auth error'));
+    try {
+      const payload = jwt.verify(token, process.env.JWT_SECRET);
+      socket.userId = payload.id;
+      next();
+    } catch (err) {
+      next(new Error('Auth error'));
+    }
+  });
+
+  io.on('connection', (socket) => {
+    onlineUsers.set(socket.userId, socket.id);
+    io.emit('presence:update', Array.from(onlineUsers.keys()));
+
+    socket.on('join:room', (room) => { socket.join(room); });
+
+    socket.on('typing', ({ to, room }) => {
+      if (room) socket.to(room).emit('typing', { userId: socket.userId });
+      else if (onlineUsers.has(to)) io.to(onlineUsers.get(to)).emit('typing', { userId: socket.userId });
+    });
+
+    socket.on('message', async (data, ack) => {
+      // data: { to, room, content, attachments }
+      try {
+        const msg = await Message.create({ from: socket.userId, ...data });
+        // deliver
+        if (data.room) io.to(data.room).emit('message', msg);
+        else if (onlineUsers.has(data.to)) io.to(onlineUsers.get(data.to)).emit('message', msg);
+        // send ack with stored message
+        ack({ status: 'ok', message: msg });
+      } catch (err) { ack({ status: 'error', error: err.message }); }
+    });
+
+    socket.on('disconnect', () => {
+      onlineUsers.delete(socket.userId);
+      io.emit('presence:update', Array.from(onlineUsers.keys()));
+    });
+  });
+};
+```
+
+---
+
+## Frontend — high-level
+
+1. Login/Register via REST API; store JWT (prefer httpOnly cookie; simple demo can use localStorage).
+2. Connect to Socket.IO passing token: `io('https://api', { auth: { token } })`.
+3. Listen for `message`, `typing`, `presence:update` and update UI state.
+4. Emit `message`, `typing`, `join:room`, etc.
+
+---
+
+## Example frontend connection (React)
+
+```js
+import { io } from 'socket.io-client';
+
+const socket = io(import.meta.env.VITE_API_URL, { auth: { token: localStorage.getItem('token') } });
+
+socket.on('connect', () => console.log('connected', socket.id));
+socket.on('message', msg => store.dispatch(receiveMessage(msg)));
+```
+
+---
+
+## UI components (ideas)
+
+* **Login/Register** — forms
+* **Sidebar** — user list / rooms with presence dots
+* **Chat panel** — message list (virtualized), message input, attachments
+* **Typing indicator** — show "User is typing..."
+* **Message status** — pending / sent / delivered / read
+
+---
+
+## Scaling & production considerations
+
+* Use Redis adapter for Socket.IO when multiple server instances: `const { createAdapter } = require('@socket.io/redis-adapter');`
+* Persist online presence to Redis for cross-instance presence
+* Use HTTPS and secure cookies for tokens
+* Rate limit socket events and REST endpoints
+* Use CDN for static assets and S3/Cloudinary for media
+* Validate and sanitize all inputs
+
+---
+
+## Running locally — quick steps
+
+1. Start MongoDB (or use Atlas) and set `MONGO_URI` and `JWT_SECRET` in `.env`.
+2. `cd backend && npm install && npm run dev` (nodemon recommended).
+3. `cd frontend && npm install && npm run dev` (Vite).
+4. Register a user and open two browser windows to test real-time messaging.
+
+---
+
+## Next features I can implement right now
+
+* Full repo scaffold (backend + frontend) with runnable code and seed data
+* Typing indicators + read receipts UI
+* File/image upload support with Cloudinary
+* Group chat + admin moderation panel
+* WebRTC voice/video prototype
+* Docker + docker-compose for local dev
+
+Tell me which one to implement and I will add it to this project in the canvas.
