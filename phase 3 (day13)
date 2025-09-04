@@ -1,0 +1,140 @@
+backend 
+// server.js
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
+
+const app = express();
+app.use(express.json());
+app.use(cors());
+
+// MongoDB connection
+mongoose.connect("mongodb://127.0.0.1:27017/noteApp", {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
+
+// Schema & Model
+const noteSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  content: String,
+  createdAt: { type: Date, default: Date.now },
+});
+
+const Note = mongoose.model("Note", noteSchema);
+
+// --- CRUD Routes ---
+// Get all notes
+app.get("/api/notes", async (req, res) => {
+  const notes = await Note.find().sort({ createdAt: -1 });
+  res.json(notes);
+});
+
+// Create new note
+app.post("/api/notes", async (req, res) => {
+  const newNote = new Note(req.body);
+  await newNote.save();
+  res.json(newNote);
+});
+
+// Get single note
+app.get("/api/notes/:id", async (req, res) => {
+  const note = await Note.findById(req.params.id);
+  res.json(note);
+});
+
+// Update note
+app.put("/api/notes/:id", async (req, res) => {
+  const updated = await Note.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  res.json(updated);
+});
+
+// Delete note
+app.delete("/api/notes/:id", async (req, res) => {
+  await Note.findByIdAndDelete(req.params.id);
+  res.json({ message: "Note deleted" });
+});
+
+// Start server
+app.listen(5000, () => console.log("✅ Backend running on http://localhost:5000"));
+
+frontend 
+import { useEffect, useState } from "react";
+import axios from "axios";
+
+function App() {
+  const [notes, setNotes] = useState([]);
+  const [form, setForm] = useState({ title: "", content: "" });
+  const [editId, setEditId] = useState(null);
+
+  // Fetch notes
+  useEffect(() => {
+    fetchNotes();
+  }, []);
+
+  const fetchNotes = async () => {
+    const res = await axios.get("http://localhost:5000/api/notes");
+    setNotes(res.data);
+  };
+
+  // Add / Update Note
+  const handleSubmit = async () => {
+    if (!form.title) return alert("Title required!");
+
+    if (editId) {
+      await axios.put(http://localhost:5000/api/notes/${editId}, form);
+      setEditId(null);
+    } else {
+      await axios.post("http://localhost:5000/api/notes", form);
+    }
+    setForm({ title: "", content: "" });
+    fetchNotes();
+  };
+
+  // Edit note
+  const editNote = (note) => {
+    setForm({ title: note.title, content: note.content });
+    setEditId(note._id);
+  };
+
+  // Delete note
+  const deleteNote = async (id) => {
+    await axios.delete(http://localhost:5000/api/notes/${id});
+    fetchNotes();
+  };
+
+  return (
+    <div style={{ margin: "20px" }}>
+      <h1>📝 Note App (CRUD)</h1>
+
+      <input
+        placeholder="Title"
+        value={form.title}
+        onChange={(e) => setForm({ ...form, title: e.target.value })}
+      />
+      <br />
+      <textarea
+        placeholder="Content"
+        value={form.content}
+        onChange={(e) => setForm({ ...form, content: e.target.value })}
+      />
+      <br />
+      <button onClick={handleSubmit}>
+        {editId ? "Update Note" : "Add Note"}
+      </button>
+
+      <ul>
+        {notes.map((note) => (
+          <li key={note._id} style={{ margin: "10px 0" }}>
+            <b>{note.title}</b> - {note.content}
+            <br />
+            <button onClick={() => editNote(note)}>✏ Edit</button>
+            <button onClick={() => deleteNote(note._id)}>❌ Delete</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default App;
