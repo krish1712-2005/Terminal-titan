@@ -1,0 +1,225 @@
+# Complete Online Store — Full Stack Project
+
+> This document is a ready-to-build blueprint (and starter code snippets) for a production-capable online store: user auth, product catalog, cart, checkout (Stripe), orders, admin panel, search, and deployment notes.
+
+---
+
+## Tech stack (recommended)
+
+* **Backend:** Node.js + Express
+* **Database:** MongoDB (Mongoose)
+* **Authentication:** JWT + bcrypt (optionally refresh tokens and httpOnly cookies)
+* **Payments:** Stripe (payment intents)
+* **Frontend:** React (Vite) + Tailwind CSS
+* **Storage:** Cloud storage for product images (S3 / Cloudinary)
+* **Optional:** Redis for caching, Elasticsearch / Algolia for search, Docker for containerization
+
+---
+
+## Key features
+
+* User: register, login, profile, address book
+* Product: create/read/update/delete (admin), categories, variants (size/color), images
+* Catalog: pagination, filters, sorting, full-text search
+* Cart: add/update/remove items, persistent (server-side or local + restore on login)
+* Checkout: shipping, tax, Stripe payment integration, order creation
+* Orders: order history for users, order management (admin) — status updates
+* Admin panel: product management, order management, user management, analytics
+* Reviews & Ratings: product reviews with moderation
+* Security: rate-limiting, input validation, helmet, CORS, HTTPS
+* Tests: unit and integration tests for critical flows
+
+---
+
+## Folder structure
+
+```
+online-store/
+├─ backend/
+│  ├─ package.json
+│  ├─ server.js
+│  ├─ config/
+│  │  └─ db.js
+│  ├─ controllers/
+│  ├─ models/
+│  ├─ routes/
+│  ├─ middleware/
+│  └─ utils/
+└─ frontend/
+   ├─ package.json
+   ├─ index.html
+   └─ src/
+      ├─ main.jsx
+      ├─ App.jsx
+      ├─ pages/
+      ├─ components/
+      ├─ services/
+      └─ styles/
+```
+
+---
+
+## Database models (Mongoose snippets)
+
+### User
+
+```js
+const UserSchema = new mongoose.Schema({
+  name: String,
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  address: [{ label: String, line1: String, city: String, state: String, zip: String, country: String }],
+  isAdmin: { type: Boolean, default: false }
+}, { timestamps: true });
+```
+
+### Product
+
+```js
+const ProductSchema = new mongoose.Schema({
+  title: { type: String, required: true, text: true },
+  description: { type: String, text: true },
+  price: { type: Number, required: true },
+  sku: String,
+  stock: { type: Number, default: 0 },
+  images: [String],
+  category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
+  variants: [{ name: String, options: [{ value: String, price: Number, stock: Number }] }],
+  ratings: { type: Number, default: 0 },
+}, { timestamps: true });
+```
+
+### Category
+
+```js
+const CategorySchema = new mongoose.Schema({ name: String, slug: String }, { timestamps: true });
+```
+
+### Cart (optional server-side)
+
+```js
+const CartSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  items: [{ product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' }, qty: Number, variant: Object }]
+}, { timestamps: true });
+```
+
+### Order
+
+```js
+const OrderSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  items: [{ product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' }, qty: Number, price: Number }],
+  shippingAddress: Object,
+  paymentResult: Object,
+  total: Number,
+  status: { type: String, default: 'pending' },
+}, { timestamps: true });
+```
+
+---
+
+## Important backend routes (REST)
+
+* `POST /api/auth/register` — register
+* `POST /api/auth/login` — login (returns JWT)
+* `GET /api/products` — list products (query: page, limit, q, category, minPrice, maxPrice)
+* `GET /api/products/:id` — product details
+* `POST /api/cart` — add/update cart (auth)
+* `GET /api/cart` — get cart (auth)
+* `POST /api/checkout` — create payment intent (auth)
+* `POST /api/webhooks/stripe` — Stripe webhook for payment confirmation
+* `POST /api/orders` — create order after payment success
+* `GET /api/orders` — user orders (auth)
+* `GET /api/admin/orders` — admin order list (admin)
+* `CRUD /api/admin/products` — admin product management
+
+---
+
+## Stripe integration flow (high level)
+
+1. Frontend collects shipping and order info and calls backend `/api/checkout`.
+2. Backend creates a PaymentIntent via Stripe SDK and returns `client_secret`.
+3. Frontend calls `stripe.confirmCardPayment(client_secret, { payment_method: { card }})`.
+4. On success, frontend notifies backend to create the order or backend listens to Stripe webhooks to mark payment succeeded and create order.
+
+---
+
+## Example backend snippet: create payment intent
+
+```js
+const stripe = require('stripe')(process.env.STRIPE_SECRET);
+app.post('/api/checkout', auth, async (req, res) => {
+  const { items, shipping } = req.body;
+  const amount = calculateAmount(items); // in cents
+  const paymentIntent = await stripe.paymentIntents.create({ amount, currency: 'usd', metadata: { userId: req.userId } });
+  res.json({ clientSecret: paymentIntent.client_secret });
+});
+```
+
+---
+
+## Frontend (React + Vite + Tailwind) — key pages
+
+* **Home / Catalog**: product cards, search bar, category filters, pagination
+* **Product page**: images carousel, description, add to cart, reviews
+* **Cart**: list items, edit qty, proceed to checkout
+* **Checkout**: shipping form, payment (Stripe Elements), review order
+* **Profile**: order history, saved addresses
+* **Admin**: CRUD UI for products, orders, users
+
+---
+
+## Sample frontend: add-to-cart service (simplified)
+
+```js
+export function addToCart(product, qty=1) {
+  const cart = JSON.parse(localStorage.getItem('cart') || '{}');
+  if (!cart.items) cart.items = [];
+  const idx = cart.items.findIndex(i => i.productId === product._id);
+  if (idx >= 0) cart.items[idx].qty += qty; else cart.items.push({ productId: product._id, qty });
+  localStorage.setItem('cart', JSON.stringify(cart));
+}
+```
+
+---
+
+## Deployment
+
+* Backend: host on Heroku / Render / DigitalOcean App Platform / Railway or containerize with Docker and use AWS ECS.
+* Database: MongoDB Atlas
+* Frontend: Vercel or Netlify (point to built static assets)
+* Image storage: Cloudinary or AWS S3 + CDN
+* Environment variables: keep secrets secure, use CI/CD for deployments.
+
+---
+
+## Security & best practices
+
+* Use HTTPS and strong CORS rules.
+* Store Stripe secret and JWT secret in env only.
+* Use httpOnly cookies for tokens if possible.
+* Validate inputs server-side and sanitize outputs.
+* Implement rate limiting and account lockouts for failed logins.
+
+---
+
+## Tests
+
+* Backend: Jest + Supertest for APIs
+* Frontend: React Testing Library + Vitest
+
+---
+
+## Next steps I can take right now
+
+1. Generate a **GitHub-ready repository** with all files and `README.md`.
+2. Scaffold the **backend** (full file set) with auth, product, order APIs and sample seed data.
+3. Scaffold the **frontend** (Vite + React + Tailwind) with pages and Stripe Elements integration.
+4. Implement **Stripe** payment flow and webhook handler.
+5. Add **admin panel** and RBAC (role-based access control).
+6. Containerize with **Docker** and add `docker-compose` for dev environment.
+
+---
+
+Pick any number from the "Next steps" list (1–6) and I'll implement that immediately in this project. If you'd rather, tell me your preferred stack (e.g., Next.js vs React, Postgres vs MongoDB, Stripe vs PayPal) and I'll adjust the scaffold.
